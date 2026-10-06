@@ -1,0 +1,585 @@
+// Prisma Schema for Verified Mentorship Marketplace
+// Production-grade PostgreSQL Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDENT
+  MENTOR
+  ADMIN
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+}
+
+enum DocumentType {
+  WORK_EMAIL
+  EMPLOYEE_ID
+  OFFER_LETTER
+  PAYSLIP
+  LINKEDIN
+}
+
+enum DocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SlotStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+}
+
+enum BookingStatus {
+  PENDING
+  HELD
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum AuditAction {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  DOC_VERIFIED
+  SLOT_HELD
+  SLOT_RELEASED
+  PAYMENT_CAPTURED
+  PAYMENT_FAILED
+  REFUND_ISSUED
+  LOGIN_FAILED
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String
+  name          String
+  role          Role           @default(STUDENT)
+  isVerified    Boolean        @default(false)
+  emailVerified Boolean        @default(false)
+  avatarUrl     String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  mentorProfile  MentorProfile?
+  studentProfile StudentProfile?
+  studentBookings Booking[]     @relation("StudentBookings")
+  refreshTokens  RefreshToken[]
+  notifications  Notification[]
+  emailOtps      EmailOtp[]
+
+  @@index([email])
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique // SHA-256 hash of refresh token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isRevoked Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+model MentorProfile {
+  id                 String             @id @default(uuid())
+  userId             String             @unique
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  headline           String
+  company            String
+  companyDomain      String
+  role               String
+  category           String
+  experienceYears    Int
+  hourlyRate         Int
+  bio                String             @db.Text
+  tags               String[]
+  meetingUrl         String?            // Mentor-provided Google Meet/Zoom link
+  status             VerificationStatus @default(PENDING_VERIFICATION)
+  ratingAvg          Float              @default(0.0)
+  totalReviews       Int                @default(0)
+  totalMenteesHelped Int                @default(0)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  verificationDocs   VerificationDocument[]
+  availabilitySlots  AvailabilitySlot[]
+  mentorBookings     Booking[]          @relation("MentorBookings")
+  reviews            Review[]
+  services           MentorService[]
+  payouts            Payout[]
+
+  @@index([company])
+  @@index([category])
+  @@index([status])
+}
+
+model MentorService {
+  id              String        @id @default(uuid())
+  mentorId        String
+  mentor          MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  title           String
+  durationMinutes Int
+  priceINR        Int
+  description     String
+  popular         Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+
+  bookings        Booking[]
+
+  @@index([mentorId])
+}
+
+model VerificationDocument {
+  id              String         @id @default(uuid())
+  mentorId        String
+  mentor          MentorProfile  @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  documentType    DocumentType
+  fileName        String
+  fileUrl         String
+  fileSize        String
+  status          DocumentStatus @default(PENDING)
+  verifiedDomain  String?
+  rejectionReason String?
+  uploadedAt      DateTime       @default(now())
+
+  @@index([mentorId])
+  @@index([status])
+}
+
+model AvailabilitySlot {
+  id            String         @id @default(uuid())
+  mentorId      String
+  mentor        MentorProfile  @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  startTime     DateTime       // UTC clock sole source of truth
+  endTime       DateTime       // UTC clock
+  status        SlotStatus     @default(AVAILABLE)
+  lockExpiresAt DateTime?      // 10-minute hold expiry
+  lockedByToken String?
+
+  bookings      Booking[]
+
+  // Invariant: Strictly unique index to prevent double-slot generation per mentor
+  @@unique([mentorId, startTime])
+  @@index([mentorId, status])
+  @@index([status, lockExpiresAt])
+}
+
+model Booking {
+  id                    String        @id @default(uuid())
+  studentId             String
+  student               User          @relation("StudentBookings", fields: [studentId], references: [id])
+  mentorId              String
+  mentor                MentorProfile @relation("MentorBookings", fields: [mentorId], references: [id])
+  slotId                String        // Non-unique so cancelled holds don't block subsequent bookings
+  slot                  AvailabilitySlot @relation(fields: [slotId], references: [id])
+  serviceId             String?
+  service               MentorService? @relation(fields: [serviceId], references: [id])
+  status                BookingStatus @default(PENDING)
+  amount                Int
+  razorpayOrderId       String?       @unique
+  reservationToken      String?
+  meetingUrl            String?
+  preSessionGoal        String
+  preSessionQuestions   String        @db.Text
+  preSessionResumeUrl   String?
+  actionPlanDeliverable String?       @db.Text
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  payment               Payment?
+  review                Review?
+  payout                Payout?
+
+  @@index([studentId])
+  @@index([mentorId])
+  @@index([slotId])
+  @@index([status])
+}
+
+model Payment {
+  id                 String        @id @default(uuid())
+  bookingId          String        @unique
+  booking            Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  razorpayPaymentId  String?       @unique
+  razorpaySignature  String?
+  amount             Int
+  status             PaymentStatus @default(PENDING)
+  platformFee        Int           // 20% platform commission
+  mentorPayout       Int           // 80% net mentor share
+  gstTax             Int           // Configurable GST
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  refunds            Refund[]
+
+  @@index([status])
+}
+
+model Payout {
+  id          String       @id @default(uuid())
+  mentorId    String
+  mentor      MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  bookingId   String       @unique
+  booking     Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  amount      Int
+  status      PayoutStatus @default(PENDING)
+  paidAt      DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([mentorId])
+  @@index([status])
+}
+
+model Refund {
+  id               String   @id @default(uuid())
+  paymentId        String
+  payment          Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  amount           Int
+  razorpayRefundId String?  @unique
+  reason           String?
+  status           String   @default("PENDING") // PENDING, PROCESSED, FAILED
+  createdAt        DateTime @default(now())
+
+  @@index([paymentId])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // BOOKING_CONFIRMED, SESSION_REMINDER, BOOKING_CANCELLED, VERIFICATION_UPDATE
+  payload   Json
+  status    String   @default("PENDING") // PENDING, SENT, FAILED
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model EmailOtp {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email     String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([userId])
+}
+
+model WebhookLog {
+  id        String   @id @default(uuid())
+  eventId   String   @unique // Idempotency check: duplicate event_id skipped
+  eventType String
+  payload   Json
+  processed Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([eventId])
+}
+
+model Review {
+  id        String        @id @default(uuid())
+  bookingId String        @unique
+  booking   Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  mentorId  String
+  mentor    MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  rating    Int
+  comment   String        @db.Text
+  hidden    Boolean       @default(false)
+  createdAt DateTime      @default(now())
+
+  @@index([mentorId])
+  @@index([hidden])
+}
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  mentorId    String?
+  action      AuditAction
+  performedBy String
+  details     String      @db.Text
+  ipAddress   String?
+  timestamp   DateTime    @default(now())
+
+  @@index([mentorId])
+  @@index([action])
+}
+
+enum ProfileVisibility {
+  PUBLIC
+  MENTORS_ONLY
+  PRIVATE
+}
+
+model StudentProfile {
+  id                   String            @id @default(uuid())
+  userId               String            @unique
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName            String
+  lastName             String?
+  displayName          String
+  phoneNumber          String?
+  country              String?           @default("India")
+  state                String?
+  city                 String?
+  bio                  String?           @db.Text
+  profilePhoto         String?
+  primaryField         String?           // e.g. "Engineering & Technology", "Commerce & Finance", "Arts & Humanities", "Science", "Design", "Medical", "Law", "Exploring"
+  primarySpecialization String?          // e.g. "Finance", "UI/UX", "Computer Science", "Psychology", "Biotechnology"
+  targetRole           String?           // e.g. "Financial Analyst", "Software Engineer", "Product Designer", "Exploring"
+  targetDomain         String?
+  targetIndustry       String?
+  isExploringCareer    Boolean           @default(false)
+  profileVisibility    ProfileVisibility @default(MENTORS_ONLY)
+  completionPercentage Int               @default(0)
+  draftStep            Int               @default(1)
+  isDraftCompleted     Boolean           @default(false)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  education            Education[]
+  interests            StudentInterest[]
+  skills               StudentSkill[]
+  goals                StudentGoal[]
+  experiences          StudentExperience[]
+  projects             StudentProject[]
+  links                StudentLink[]
+  resume               StudentResume?
+  mentorshipPreference StudentMentorshipPreference?
+  targetOrganizations  StudentTargetOrganization[]
+
+  @@index([primaryField])
+  @@index([targetRole])
+  @@index([profileVisibility])
+}
+
+model Education {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  institutionName  String
+  educationLevel   String         // School, Higher Secondary, Diploma, Undergraduate, Postgraduate, Doctorate, Certification, Vocational, Other
+  degreeOrProgram  String?        // B.Com, B.Des, B.Tech, BA, LLB, High School, MBBS, etc.
+  fieldOfStudy     String?        // Commerce, Design, Law, Computer Science, Biology, Economics, etc.
+  specialization   String?
+  startDate        DateTime?
+  expectedEndDate  DateTime?
+  completionDate   DateTime?
+  currentStatus    String         @default("Currently Studying") // Currently Studying, Graduated, Completed, On Break, Dropped Out, Other
+  gradeType        String?        @default("Not Applicable") // CGPA, GPA, Percentage, Grade, Marks, Pass/Fail, Not Applicable
+  gradeValue       String?
+  description      String?        @db.Text
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([studentProfileId])
+  @@index([educationLevel])
+  @@index([fieldOfStudy])
+}
+
+model StudentInterest {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  interestName     String
+  category         String?
+  createdAt        DateTime       @default(now())
+
+  @@unique([studentProfileId, interestName])
+  @@index([studentProfileId])
+}
+
+model StudentSkill {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  skillName        String
+  category         String?        // Technical, Professional, Creative, Academic, Domain-Specific
+  proficiencyLevel String?        // Beginner, Intermediate, Advanced, Expert
+  createdAt        DateTime       @default(now())
+
+  @@unique([studentProfileId, skillName])
+  @@index([studentProfileId])
+}
+
+model StudentGoal {
+  id                 String         @id @default(uuid())
+  studentProfileId   String
+  studentProfile     StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  goalType           String         // Internship, Job, Entrance Exam, Learn Skill, Build Portfolio, Start Business, Interview Prep, Career Switch, Higher Education, Research, Academic Performance, Industry Guidance, Explore Options, Freelancing, Competitive Exams, Other
+  title              String
+  description        String?        @db.Text
+  priority           String         @default("Medium") // Low, Medium, High
+  targetDate         DateTime?
+  status             String         @default("In Progress") // Not Started, In Progress, Completed, Paused
+  progressPercentage Int            @default(0)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([studentProfileId])
+  @@index([goalType])
+}
+
+model StudentExperience {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  type             String         // Internship, Project, Freelance, Volunteer, Research, Part-time, Student Organization, Competition, Entrepreneurship, Other
+  title            String
+  organization     String
+  description      String?        @db.Text
+  startDate        DateTime?
+  endDate          DateTime?
+  currentlyActive  Boolean        @default(false)
+  skillsUsed       String[]       @default([])
+  achievements     String?        @db.Text
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([studentProfileId])
+}
+
+model StudentProject {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  title            String
+  description      String?        @db.Text
+  category         String?
+  role             String?
+  startDate        DateTime?
+  endDate          DateTime?
+  projectUrl       String?
+  repositoryUrl    String?
+  demoUrl          String?
+  mediaUrl         String?
+  skills           String[]       @default([])
+  achievements     String?        @db.Text
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([studentProfileId])
+}
+
+model StudentLink {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  platform         String         // LinkedIn, GitHub, Portfolio, Behance, Dribbble, Medium, ResearchGate, Google Scholar, Personal Website, YouTube, Instagram, Other
+  url              String
+  label            String?
+  createdAt        DateTime       @default(now())
+
+  @@index([studentProfileId])
+}
+
+model StudentResume {
+  id               String         @id @default(uuid())
+  studentProfileId String         @unique
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  fileName         String
+  fileUrl          String
+  fileKey          String?
+  mimeType         String
+  fileSize         Int
+  uploadedAt       DateTime       @default(now())
+}
+
+model StudentMentorshipPreference {
+  id                       String         @id @default(uuid())
+  studentProfileId         String         @unique
+  studentProfile           StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  preferredMentorFields    String[]       @default([])
+  preferredMentorExpertise String[]       @default([])
+  preferredMentorRoles     String[]       @default([])
+  preferredMentorIndustries String[]      @default([])
+  preferredSessionType     String         @default("Video") // Video, Audio, Chat, Any
+  minBudgetINR             Int            @default(0)
+  maxBudgetINR             Int            @default(3000)
+  preferredLanguages       String[]       @default(["English", "Hindi"])
+  preferredExperienceLevel String?        @default("Any") // Any, 0-2 years, 3-5 years, 5-10 years, 10+ years
+  preferredAvailability    String?        @default("Any") // Any, Weekdays, Weekends, Evenings
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+}
+
+model StudentTargetOrganization {
+  id               String         @id @default(uuid())
+  studentProfileId String
+  studentProfile   StudentProfile @relation(fields: [studentProfileId], references: [id], onDelete: Cascade)
+  organizationName String
+  type             String?        // Company, University, Research Institute, NGO, Government, Startup, Other
+  createdAt        DateTime       @default(now())
+
+  @@index([studentProfileId])
+}
+
+model FieldCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  slug        String   @unique
+  icon        String?
+  description String?  @db.Text
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model InterestTaxonomy {
+  id              String   @id @default(uuid())
+  name            String   @unique
+  fieldCategory   String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+}
+
+model SkillTaxonomy {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  category  String   // Technical, Professional, Creative, Academic, Domain-Specific
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
