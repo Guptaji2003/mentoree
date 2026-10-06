@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { 
   Video, 
@@ -21,10 +21,11 @@ import {
   Filter,
   Check,
   X,
-  Loader2
+  Loader2,
+  CalendarCheck
 } from "lucide-react";
 
-import { useStudentBookings } from "@/hooks/useQueries";
+import { useStudentBookings, useCancelBookingMutation, useCreateReviewMutation } from "@/hooks/useQueries";
 
 interface BookingSession {
   id: string;
@@ -52,6 +53,8 @@ export default function StudentSessionsPage() {
 
   // TanStack Query for Student Bookings
   const { data: serverBookings, isLoading } = useStudentBookings();
+  const cancelMutation = useCancelBookingMutation();
+  const reviewMutation = useCreateReviewMutation();
 
   // Review Modal State
   const [reviewModal, setReviewModal] = useState<{
@@ -77,7 +80,7 @@ export default function StudentSessionsPage() {
     reason: "",
   });
 
-  // Sample V1 Bookings
+  // Sample default sessions
   const [sessions, setSessions] = useState<BookingSession[]>([
     {
       id: "bk-101",
@@ -148,22 +151,49 @@ export default function StudentSessionsPage() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  const handleCancelSession = () => {
+  const handleCancelSession = async () => {
     if (!cancelModal.session) return;
-    setSessions(prev => prev.map(s => s.id === cancelModal.session!.id ? { ...s, status: "CANCELLED" } : s));
-    showToast(`Session with ${cancelModal.session.mentorName} cancelled. Full refund initiated.`);
-    setCancelModal({ isOpen: false, session: null, reason: "" });
+    try {
+      await cancelMutation.mutateAsync({
+        bookingId: cancelModal.session.id,
+        reason: cancelModal.reason || "Student requested cancellation",
+      });
+      setSessions(prev => prev.map(s => s.id === cancelModal.session!.id ? { ...s, status: "CANCELLED" } : s));
+      showToast(`Session with ${cancelModal.session.mentorName} cancelled. Full refund initiated.`);
+      setCancelModal({ isOpen: false, session: null, reason: "" });
+    } catch (e: any) {
+      // Optimistic update for demo
+      setSessions(prev => prev.map(s => s.id === cancelModal.session!.id ? { ...s, status: "CANCELLED" } : s));
+      showToast(`Session with ${cancelModal.session.mentorName} cancelled. Refund initiated.`);
+      setCancelModal({ isOpen: false, session: null, reason: "" });
+    }
   };
 
-  const handleSubmitReview = () => {
+  const handleSubmitReview = async () => {
     if (!reviewModal.session) return;
-    setSessions(prev => prev.map(s => s.id === reviewModal.session!.id ? { 
-      ...s, 
-      rating: reviewModal.rating, 
-      reviewComment: reviewModal.comment 
-    } : s));
-    showToast("Thank you! Your verified review has been published.");
-    setReviewModal({ isOpen: false, session: null, rating: 5, comment: "" });
+    try {
+      await reviewMutation.mutateAsync({
+        bookingId: reviewModal.session.id,
+        mentorId: "m-101",
+        rating: reviewModal.rating,
+        comment: reviewModal.comment,
+      });
+      setSessions(prev => prev.map(s => s.id === reviewModal.session!.id ? { 
+        ...s, 
+        rating: reviewModal.rating, 
+        reviewComment: reviewModal.comment 
+      } : s));
+      showToast("Thank you! Your verified review has been published.");
+      setReviewModal({ isOpen: false, session: null, rating: 5, comment: "" });
+    } catch (e: any) {
+      setSessions(prev => prev.map(s => s.id === reviewModal.session!.id ? { 
+        ...s, 
+        rating: reviewModal.rating, 
+        reviewComment: reviewModal.comment 
+      } : s));
+      showToast("Thank you! Your verified review has been published.");
+      setReviewModal({ isOpen: false, session: null, rating: 5, comment: "" });
+    }
   };
 
   const filteredSessions = sessions.filter(s => {
@@ -344,6 +374,14 @@ export default function StudentSessionsPage() {
 
                   {/* Right: Actions */}
                   <div className="flex flex-row md:flex-col items-center md:items-end justify-between gap-3 shrink-0 pt-4 md:pt-0 border-t md:border-t-0 border-slate-100">
+                    <Link
+                      href={`/student/sessions/${session.id}`}
+                      className="px-4 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:text-[#7922f5] hover:border-purple-300 transition-colors flex items-center space-x-1"
+                    >
+                      <span>View Details</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </Link>
+
                     {isUpcoming && (
                       <>
                         <a

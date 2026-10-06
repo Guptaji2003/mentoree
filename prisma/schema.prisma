@@ -141,6 +141,13 @@ model MentorProfile {
   reviews            Review[]
   services           MentorService[]
   payouts            Payout[]
+  workingHours       MentorWorkingHours?
+  schedulingRule     SchedulingRule?
+  blockedDates       BlockedDate[]
+  breaks             MentorBreak[]
+  serviceOverrides   ServiceAvailabilityOverride[]
+  calendarConnections CalendarConnection[]
+  transactions       MentorTransaction[]
 
   @@index([company])
   @@index([category])
@@ -148,17 +155,126 @@ model MentorProfile {
 }
 
 model MentorService {
-  id              String        @id @default(uuid())
-  mentorId        String
-  mentor          MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
-  title           String
-  durationMinutes Int
-  priceINR        Int
-  description     String
-  popular         Boolean       @default(false)
-  createdAt       DateTime      @default(now())
+  id                  String        @id @default(uuid())
+  mentorId            String
+  mentor              MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  title               String
+  category            String        @default("Career Guidance")
+  durationMinutes     Int           @default(60)
+  priceINR            Int
+  currency            String        @default("INR")
+  description         String
+  detailedDescription String?       @db.Text
+  sessionType         String        @default("VIDEO")
+  deliverables        String[]      @default([])
+  topicsCovered       String[]      @default([])
+  targetAudience      String?
+  bookingMode         String        @default("INSTANT") // INSTANT, APPROVAL_REQUIRED
+  status              String        @default("PUBLISHED") // DRAFT, PUBLISHED, PAUSED, ARCHIVED
+  popular             Boolean       @default(false)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @default(now()) @updatedAt
 
-  bookings        Booking[]
+  bookings            Booking[]
+  serviceQuestions    ServiceQuestion[]
+  overrides           ServiceAvailabilityOverride[]
+
+  @@index([mentorId])
+  @@index([status])
+}
+
+model ServiceQuestion {
+  id        String        @id @default(uuid())
+  serviceId String
+  service   MentorService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  question  String
+  type      String        @default("SHORT_TEXT") // SHORT_TEXT, LONG_TEXT, SINGLE_SELECT, MULTI_SELECT, NUMBER, URL
+  required  Boolean       @default(true)
+  options   String[]      @default([])
+  sortOrder Int           @default(0)
+  status    String        @default("ACTIVE")
+  createdAt DateTime      @default(now())
+
+  @@index([serviceId])
+}
+
+model MentorWorkingHours {
+  id             String        @id @default(uuid())
+  mentorId       String        @unique
+  mentor         MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  timezone       String        @default("Asia/Kolkata")
+  weeklySchedule Json          // array of { day: 'MONDAY', enabled: true, intervals: [{ start: '10:00', end: '18:00' }] }
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model SchedulingRule {
+  id                   String        @id @default(uuid())
+  mentorId             String        @unique
+  mentor               MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  minNoticeHours       Int           @default(12)
+  maxFutureBookingDays Int           @default(30)
+  bufferBeforeMinutes  Int           @default(0)
+  bufferAfterMinutes   Int           @default(15)
+  slotIntervalMinutes  Int           @default(30)
+  maxBookingsPerDay    Int?          @default(4)
+  maxBookingsPerWeek   Int?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+}
+
+model BlockedDate {
+  id        String        @id @default(uuid())
+  mentorId  String
+  mentor    MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime
+  startTime String?       // optional e.g. "14:00"
+  endTime   String?       // optional e.g. "18:00"
+  reason    String        @default("VACATION") // VACATION, PERSONAL, HOLIDAY, WORK, OTHER
+  notes     String?
+  createdAt DateTime      @default(now())
+
+  @@index([mentorId])
+}
+
+model MentorBreak {
+  id        String        @id @default(uuid())
+  mentorId  String
+  mentor    MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime
+  reason    String?
+  breakType String        @default("VACATION")
+  isActive  Boolean       @default(true)
+  createdAt DateTime      @default(now())
+
+  @@index([mentorId])
+}
+
+model ServiceAvailabilityOverride {
+  id             String        @id @default(uuid())
+  mentorId       String
+  mentor         MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  serviceId      String
+  service        MentorService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  weeklySchedule Json
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([mentorId, serviceId])
+}
+
+model CalendarConnection {
+  id          String        @id @default(uuid())
+  mentorId    String
+  mentor      MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  provider    String        @default("GOOGLE_CALENDAR") // GOOGLE_CALENDAR, OUTLOOK
+  email       String?
+  syncEnabled Boolean       @default(true)
+  lastSyncAt  DateTime?
+  createdAt   DateTime      @default(now())
 
   @@index([mentorId])
 }
@@ -209,6 +325,7 @@ model Booking {
   serviceId             String?
   service               MentorService? @relation(fields: [serviceId], references: [id])
   status                BookingStatus @default(PENDING)
+  bookingMode           String        @default("INSTANT") // INSTANT, APPROVAL_REQUIRED
   amount                Int
   razorpayOrderId       String?       @unique
   reservationToken      String?
@@ -217,16 +334,56 @@ model Booking {
   preSessionQuestions   String        @db.Text
   preSessionResumeUrl   String?
   actionPlanDeliverable String?       @db.Text
+  cancellationReason    String?
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
   payment               Payment?
   review                Review?
   payout                Payout?
+  session               Session?
+  transaction           MentorTransaction?
 
   @@index([studentId])
   @@index([mentorId])
   @@index([slotId])
+  @@index([status])
+}
+
+model Session {
+  id             String    @id @default(uuid())
+  bookingId      String    @unique
+  booking        Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  provider       String    @default("GOOGLE_MEET")
+  meetingId      String?
+  meetingUrl     String?
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  actualStart    DateTime?
+  actualEnd      DateTime?
+  status         String    @default("SCHEDULED") // SCHEDULED, LIVE, COMPLETED, CANCELLED, NO_SHOW
+  mentorNotes    String?   @db.Text
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([status])
+}
+
+model MentorTransaction {
+  id           String        @id @default(uuid())
+  mentorId     String
+  mentor       MentorProfile @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  bookingId    String        @unique
+  booking      Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  grossAmount  Int
+  platformFee  Int           // 20% platform commission
+  mentorAmount Int           // 80% net mentor take
+  refundAmount Int           @default(0)
+  currency     String        @default("INR")
+  status       String        @default("PAID") // PENDING, PAID, REFUNDED, FAILED
+  createdAt    DateTime      @default(now())
+
+  @@index([mentorId])
   @@index([status])
 }
 
@@ -582,4 +739,3 @@ model SkillTaxonomy {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 }
-

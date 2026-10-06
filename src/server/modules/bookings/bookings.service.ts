@@ -155,6 +155,130 @@ export class BookingsService {
   }
 
   /**
+   * Reschedule booking to a new available slot
+   */
+  public static async rescheduleBooking(
+    session: SessionPayload,
+    bookingId: string,
+    newSlotId: string,
+    reason?: string,
+    ipAddress?: string
+  ) {
+    const booking = await this.getBookingById(session, bookingId);
+
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      throw new Error(`400 Bad Request: Only CONFIRMED bookings can be rescheduled (current: ${booking.status})`);
+    }
+
+    if (booking.slotId === newSlotId) {
+      throw new Error("400 Bad Request: New slot must be different from current slot");
+    }
+
+    const newSlot = await db.availabilitySlot.findUnique({
+      where: { id: newSlotId },
+    });
+
+    if (!newSlot) {
+      throw new Error("404 Not Found: Requested new availability slot does not exist");
+    }
+
+    if (newSlot.mentorId !== booking.mentorId) {
+      throw new Error("400 Bad Request: New slot must belong to the same mentor");
+    }
+
+    if (newSlot.startTime <= new Date()) {
+      throw new Error("400 Bad Request: New slot must be in the future");
+    }
+
+    const now = new Date();
+
+    const updated = await db.$transaction(async (tx) => {
+      // 1. Lock new slot atomically
+      const lockRes = await tx.availabilitySlot.updateMany({
+        where: {
+          id: newSlotId,
+          OR: [
+            { status: SlotStatus.AVAILABLE },
+            { status: SlotStatus.HELD, lockExpiresAt: { lt: now } },
+          ],
+        },
+        data: {
+          status: SlotStatus.BOOKED,
+          lockedByToken: null,
+          lockExpiresAt: null,
+        },
+      });
+
+      if (lockRes.count === 0) {
+        throw new Error("409 Conflict: Requested slot is no longer available. Please choose another time.");
+      }
+
+      // 2. Release old slot
+      await tx.availabilitySlot.update({
+        where: { id: booking.slotId },
+        data: {
+          status: SlotStatus.AVAILABLE,
+          lockedByToken: null,
+          lockExpiresAt: null,
+        },
+      });
+
+      // 3. Update booking
+      const updatedBooking = await tx.booking.update({
+        where: { id: booking.id },
+        data: {
+          slotId: newSlot.id,
+        },
+        include: {
+          slot: true,
+          mentor: { include: { user: true } },
+          student: true,
+          service: true,
+        },
+      });
+
+      // 4. Audit log
+      await tx.auditLog.create({
+        data: {
+          mentorId: booking.mentorId,
+          action: AuditAction.APPROVED,
+          performedBy: session.email,
+          details: `Rescheduled booking ${booking.id} from slot ${booking.slotId} to ${newSlot.id}. Reason: ${reason || "Student requested"}`,
+          ipAddress: ipAddress || null,
+        },
+      });
+
+      return updatedBooking;
+    });
+
+    // Send notifications
+    await Promise.all([
+      NotificationService.sendEmailNotification({
+        userId: booking.studentId,
+        to: booking.student.email,
+        subject: `📅 Session Rescheduled with ${booking.mentor.user.name}`,
+        html: `<p>Your mentorship session has been rescheduled to <strong>${newSlot.startTime.toUTCString()}</strong>.</p>`,
+        type: "BOOKING_CONFIRMED",
+        payload: { bookingId: booking.id, newStartTime: newSlot.startTime },
+      }),
+      NotificationService.sendEmailNotification({
+        userId: booking.mentor.userId,
+        to: booking.mentor.user.email,
+        subject: `📅 Session Rescheduled by ${session.name || "Student"}`,
+        html: `<p>Session with ${booking.student.name} is now rescheduled to <strong>${newSlot.startTime.toUTCString()}</strong>.</p>`,
+        type: "BOOKING_CONFIRMED",
+        payload: { bookingId: booking.id, newStartTime: newSlot.startTime },
+      }),
+    ]);
+
+    return {
+      success: true,
+      message: "Session rescheduled successfully",
+      booking: updated,
+    };
+  }
+
+  /**
    * Mark booking as COMPLETED and automatically generate mentor Payout row
    */
   public static async completeBooking(

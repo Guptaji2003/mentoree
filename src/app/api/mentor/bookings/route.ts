@@ -1,0 +1,19 @@
+import { NextRequest } from "next/server";
+import { requireAuth } from "@/server/utils/auth-guard";
+import { apiSuccess, handleRouteError } from "@/server/utils/response";
+import { MentorPortalService } from "@/server/modules/mentor-portal/mentor-portal.service";
+import { Role } from "@prisma/client";
+
+export async function GET(req: NextRequest) {
+  try {
+    const { session } = await requireAuth(req, [Role.MENTOR, Role.ADMIN]);
+    const { searchParams } = new URL(req.url);
+    const tab = searchParams.get("tab") as any;
+    const search = searchParams.get("search") || undefined;
+
+    const bookings = await MentorPortalService.listBookings(session, tab, search);
+    return apiSuccess({ bookings });
+  } catch (err) {
+    return handleRouteError(err);
+  }
+}
