@@ -1,0 +1,51 @@
+name: CI / Production Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/mentorship_test?schema=public"
+      JWT_SECRET: "test_jwt_secret_key_at_least_32_characters_long_12345"
+      JWT_REFRESH_SECRET: "test_jwt_refresh_secret_key_at_least_32_characters_long_12345"
+      RAZORPAY_KEY_ID: "rzp_test_sample_key"
+      RAZORPAY_KEY_SECRET: "rzp_test_sample_secret"
+      RAZORPAY_WEBHOOK_SECRET: "rzp_test_sample_webhook_secret"
+      AWS_ACCESS_KEY_ID: "test_aws_key"
+      AWS_SECRET_ACCESS_KEY: "test_aws_secret"
+      AWS_S3_BUCKET: "test-bucket"
+      AWS_REGION: "ap-south-1"
+      RESEND_API_KEY: "re_test_sample_key"
+      RESEND_FROM_EMAIL: "onboarding@resend.dev"
+      CRON_SECRET: "test_cron_secret"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Run TypeScript Check
+        run: npx tsc --noEmit
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run Vitest Unit & Integration Tests
+        run: npm run test
